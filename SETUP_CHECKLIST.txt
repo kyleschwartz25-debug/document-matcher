@@ -1,0 +1,150 @@
+# Setup Checklist
+
+Follow these steps to get the Document Matcher running:
+
+## ✓ STEP 1: Install Python (2-5 minutes)
+
+Choose ONE method:
+
+### Method A: Download from python.org (Recommended)
+- [ ] Go to https://www.python.org/downloads/
+- [ ] Click "Download Python 3.11.x" (latest version)
+- [ ] Run the installer
+- [ ] **IMPORTANT:** Check the box for "Add Python to PATH"
+- [ ] Check the box for "pip"
+- [ ] Click "Install Now"
+- [ ] Wait for installation to complete
+- [ ] Close installer
+
+### Method B: Use SETUP.bat (if Method A fails)
+- [ ] Double-click `SETUP.bat`
+- [ ] Follow any prompts
+- [ ] Wait for it to complete
+
+---
+
+## ✓ STEP 2: Verify Python Installation
+
+Open Command Prompt and type:
+```
+python --version
+```
+
+You should see: `Python 3.11.x` or similar
+
+- [ ] Python command works
+- [ ] Version is 3.11 or higher
+
+---
+
+## ✓ STEP 3: Install Dependencies (1-2 minutes)
+
+### Option A: Run SETUP.bat
+- [ ] Double-click `SETUP.bat` in the Document Checker folder
+- [ ] Wait for it to complete
+
+### Option B: Manual
+- [ ] Open Command Prompt
+- [ ] Navigate to: `cd c:\Scripts\Document Checker`
+- [ ] Run: `python -m pip install PyPDF2`
+- [ ] Wait for completion
+
+---
+
+## ✓ STEP 4: Launch the Tool
+
+### Option A: Double-click (Easiest)
+- [ ] Double-click `launch.bat` in the Document Checker folder
+- [ ] The GUI window should open
+
+### Option B: Command Prompt
+- [ ] Open Command Prompt
+- [ ] Navigate to: `cd c:\Scripts\Document Checker`
+- [ ] Run: `python document_matcher.py`
+- [ ] The GUI window should open
+
+---
+
+## ✓ STEP 5: Test with Sample Documents
+
+- [ ] Click "SELECT SO PDF"
+- [ ] Choose: `Example_Pairs\SO-L029638-Higashi-Kerwyn Tokeshi-Rev B-Receipt.pdf`
+- [ ] Click "SELECT PO PDF"
+- [ ] Choose: `Example_Pairs\PO-KS2013442AIR-Storm Training Group-Chaz Lemon-Rev A.pdf`
+- [ ] Click "COMPARE"
+- [ ] You should see: **"STATUS: COMPLETE MATCH"**
+- [ ] Click "COPY TO CLIPBOARD"
+- [ ] You should see: "Results copied to clipboard!"
+
+---
+
+## ✓ STEP 6: You're Done!
+
+If all tests passed:
+- [ ] Python is installed ✓
+- [ ] Dependencies installed ✓
+- [ ] Tool launches ✓
+- [ ] PDF extraction works ✓
+- [ ] Comparison logic works ✓
+- [ ] Clipboard copy works ✓
+
+**You're ready to use the Document Matcher on real orders!**
+
+---
+
+## ⚠️ Troubleshooting
+
+### Problem: "Python not found"
+**Solution:**
+- Install Python from https://www.python.org/downloads/
+- Make sure to check "Add Python to PATH"
+- Restart your computer
+- Try again
+
+### Problem: "PyPDF2 not found" or "ModuleNotFoundError"
+**Solution:**
+- Run `SETUP.bat` again
+- Or manually: `python -m pip install PyPDF2`
+
+### Problem: Application won't open
+**Solution:**
+- Open Command Prompt in the Document Checker folder
+- Run: `python document_matcher.py`
+- Look for error messages
+- Check PYTHON_SETUP.md for detailed troubleshooting
+
+### Problem: "PDF extraction failed"
+**Solution:**
+- Make sure the PDF is text-based (not scanned image)
+- Try opening the PDF in Adobe Reader and re-saving it
+- Check if file path has special characters
+
+---
+
+## 📞 Need Help?
+
+If you get stuck:
+
+1. Check the detailed guide: `PYTHON_SETUP.md`
+2. Open Command Prompt and try running the app to see error messages
+3. Note the exact error message
+4. Share it for help
+
+---
+
+## When You're Done
+
+Once setup is complete, using the tool is fast:
+
+1. Double-click `launch.bat` or `document_matcher.py`
+2. Select SO PDF
+3. Select PO PDF
+4. Click COMPARE
+5. Copy results to clipboard
+
+**Total time per comparison: ~30 seconds**
+
+---
+
+**Setup Date:** _______________  
+**Setup Status:** ☐ Complete ☐ In Progress ☐ Needs Help
