@@ -5,12 +5,13 @@ Compares Sales Orders (SO) with Purchase Orders (PO)
 """
 
 import tkinter as tk
-from tkinter import filedialog, messagebox, scrolledtext
+from tkinter import filedialog, messagebox, scrolledtext, Frame, Label
 import PyPDF2
 import re
 from pathlib import Path
 from dataclasses import dataclass
 from typing import List, Tuple
+import difflib
 
 @dataclass
 class ShipToAddress:
@@ -188,47 +189,52 @@ class DocumentMatcher:
         self.po_address = PDFExtractor.parse_ship_to(text)
         self.po_items = PDFExtractor.parse_line_items(text, is_invoice=False)
     
-    def compare(self) -> Tuple[bool, List[str]]:
-        """Compare SO and PO, return (match: bool, issues: List[str])"""
+    def compare(self) -> Tuple[bool, List[str], dict]:
+        """Compare SO and PO, return (match: bool, issues: List[str], field_status: dict)"""
         if not self.so_address or not self.po_address:
-            return False, ["Missing address data"]
+            return False, ["Missing address data"], {}
         
         issues = []
+        field_status = {}
+        
+        def fuzzy_status(a, b):
+            if a == b:
+                return 'green'
+            if a and b:
+                ratio = difflib.SequenceMatcher(None, a.lower(), b.lower()).ratio()
+                if ratio > 0.85:
+                    return 'yellow'
+            return 'red'
         
         # Compare addresses
-        if self.so_address.name != self.po_address.name:
-            issues.append(f"Ship To Name: SO='{self.so_address.name}' vs PO='{self.po_address.name}'")
+        fields = [
+            ('name', 'Ship To Name', self.so_address.name, self.po_address.name),
+            ('address', 'Ship To Address', self.so_address.address, self.po_address.address),
+            ('city', 'Ship To City', self.so_address.city, self.po_address.city),
+            ('state', 'Ship To State', self.so_address.state, self.po_address.state),
+            ('zip_code', 'Ship To Zip', self.so_address.zip_code, self.po_address.zip_code),
+        ]
+        for key, label, so_val, po_val in fields:
+            status = fuzzy_status(so_val, po_val)
+            field_status[key] = status
+            if status == 'red':
+                issues.append(f"{label}: SO='{so_val}' vs PO='{po_val}'")
+            elif status == 'yellow':
+                issues.append(f"{label} (close): SO='{so_val}' vs PO='{po_val}'")
         
-        if self.so_address.address != self.po_address.address:
-            issues.append(f"Ship To Address: SO='{self.so_address.address}' vs PO='{self.po_address.address}'")
-        
-        if self.so_address.city != self.po_address.city:
-            issues.append(f"Ship To City: SO='{self.so_address.city}' vs PO='{self.po_address.city}'")
-        
-        if self.so_address.state != self.po_address.state:
-            issues.append(f"Ship To State: SO='{self.so_address.state}' vs PO='{self.po_address.state}'")
-        
-        if self.so_address.zip_code != self.po_address.zip_code:
-            issues.append(f"Ship To Zip: SO='{self.so_address.zip_code}' vs PO='{self.po_address.zip_code}'")
-        
-        # Compare items
+        # Compare items (not yet in summary grid)
         if len(self.so_items) != len(self.po_items):
             issues.append(f"Line item count: SO={len(self.so_items)} vs PO={len(self.po_items)}")
-        
         for i in range(min(len(self.so_items), len(self.po_items))):
             so_item = self.so_items[i]
             po_item = self.po_items[i]
-            
             if so_item.sku != po_item.sku:
                 issues.append(f"Line {i+1} SKU: SO='{so_item.sku}' vs PO='{po_item.sku}'")
-            
             if so_item.description != po_item.description:
                 issues.append(f"Line {i+1} Desc: SO='{so_item.description}' vs PO='{po_item.description}'")
-            
             if so_item.qty != po_item.qty:
                 issues.append(f"Line {i+1} Qty: SO={so_item.qty} vs PO={po_item.qty}")
-        
-        return len(issues) == 0, issues
+        return len(issues) == 0, issues, field_status
 
 class DocumentMatcherGUI:
     """GUI for Document Matcher"""
@@ -270,11 +276,32 @@ class DocumentMatcherGUI:
                           command=self.select_po, bg='lightgreen', padx=20)
         po_btn.pack(side=tk.RIGHT)
         
+        # Summary Grid
+        summary_label = tk.Label(root, text="Field Match Summary:", font=("Arial", 10, "bold"), bg='white')
+        summary_label.pack(anchor=tk.W, padx=10, pady=(10, 0))
+        self.summary_frame = Frame(root, bg='white')
+        self.summary_frame.pack(fill=tk.X, padx=10, pady=(0, 10))
+
+        # Address fields to show
+        self.summary_fields = [
+            ('name', 'Name'),
+            ('address', 'Address'),
+            ('city', 'City'),
+            ('state', 'State'),
+            ('zip_code', 'Zip'),
+        ]
+        self.summary_labels = {}
+        for idx, (key, label) in enumerate(self.summary_fields):
+            lbl = Label(self.summary_frame, text=label, width=12, relief='groove', bg='lightgray', font=("Arial", 10, "bold"))
+            lbl.grid(row=0, column=idx, padx=2, pady=2)
+            val = Label(self.summary_frame, text="", width=20, relief='ridge', bg='white', font=("Arial", 10))
+            val.grid(row=1, column=idx, padx=2, pady=2)
+            self.summary_labels[key] = val
+
         # Results
         results_label = tk.Label(root, text="Comparison Results:", 
                                 font=("Arial", 10, "bold"), bg='white')
-        results_label.pack(anchor=tk.W, padx=10, pady=(10, 0))
-        
+        results_label.pack(anchor=tk.W, padx=10, pady=(0, 0))
         self.results_text = scrolledtext.ScrolledText(root, height=20, width=120, 
                                                      font=("Courier", 9))
         self.results_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
@@ -342,18 +369,24 @@ class DocumentMatcherGUI:
             return
         
         try:
-            match, issues = self.matcher.compare()
-            
+            match, issues, field_status = self.matcher.compare()
+            # Update summary grid
+            so_addr = self.matcher.so_address
+            po_addr = self.matcher.po_address
+            for key, label in self.summary_fields:
+                so_val = getattr(so_addr, key, "")
+                po_val = getattr(po_addr, key, "")
+                status = field_status.get(key, 'white')
+                display = f"SO: {so_val}\nPO: {po_val}"
+                color = {'green': '#90EE90', 'yellow': '#FFFF99', 'red': '#FF7F7F', 'white': 'white'}[status]
+                self.summary_labels[key].config(text=display, bg=color)
             self.results_text.config(state=tk.NORMAL)
             self.results_text.delete(1.0, tk.END)
-            
             so_file = Path(self.matcher.so_path).name
             po_file = Path(self.matcher.po_path).name
-            
             self.results_text.insert(tk.END, f"SO: {so_file}\n")
             self.results_text.insert(tk.END, f"PO: {po_file}\n")
             self.results_text.insert(tk.END, "\n" + "="*100 + "\n\n")
-            
             if match:
                 self.results_text.insert(tk.END, "STATUS: COMPLETE MATCH\n\n", "success")
             else:
@@ -361,13 +394,10 @@ class DocumentMatcherGUI:
                 self.results_text.insert(tk.END, "Issues Found:\n" + "-"*100 + "\n")
                 for issue in issues:
                     self.results_text.insert(tk.END, f"  - {issue}\n")
-            
             self.results_text.config(state=tk.DISABLED)
-            
             # Configure tags for colors
             self.results_text.tag_config("success", foreground="green")
             self.results_text.tag_config("error", foreground="red")
-            
         except Exception as e:
             messagebox.showerror("Error", f"Comparison failed: {e}")
     
