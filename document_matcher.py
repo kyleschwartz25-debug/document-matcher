@@ -53,6 +53,12 @@ class PDFExtractor:
         vendor_keywords = ['fuji', 'pakistan', 'muhabbat', 'khan', 'industrial', 'estate', 'sialkot', 'daska']
         # 1. Try to find the standard 'Ship To:' block (for SO/PO)
         for i, line in enumerate(lines):
+            # Print each line for debugging header detection
+            if i > 0:
+                print(f"[DEBUG] Line {i-1}: {lines[i-1]}")
+            print(f"[DEBUG] Line {i}: {line}")
+            if i < len(lines) - 1:
+                print(f"[DEBUG] Line {i+1}: {lines[i+1]}")
             if 'Ship To' in line and ':' in line:
                 # Try to extract next 3-4 lines as address
                 collected = []
@@ -112,28 +118,31 @@ class PDFExtractor:
         lines = text.split('\n')
         in_items = False
         buffer = []
-        for i, line in enumerate(lines):
-            # Detect start of items section (SO or PO)
-            if is_invoice:
-                if re.search(r"Item.*Type.*Number.*Description.*Unit PriceQty", line.replace(' ', ''), re.IGNORECASE):
-                    in_items = True
-                    continue
-            else:
-                if re.search(r"Item.*Number.*Description.*Qty", line, re.IGNORECASE):
-                    in_items = True
-                    continue
+        i = 0
+        while i < len(lines):
+            # Flexible header detection for SO and PO
+            if i+2 < len(lines):
+                if (lines[i].strip().lower() == 'item'):
+                    second = lines[i+1].replace(' ', '').lower()
+                    third = lines[i+2].replace(' ', '').lower()
+                    # SO: '#typenumberdescriptionunitpriceqty' and 'orderedtotalprice'
+                    if ('number' in second and 'qty' in second and 'ordered' in third):
+                        in_items = True
+                        i += 3
+                        continue
+                    # PO: '#numberdescriptionqty' and 'ordereduom'
+                    if ('number' in second and 'qty' in second and 'uom' in third):
+                        in_items = True
+                        i += 3
+                        continue
             # Detect end of items section
-            if in_items and re.search(r"Subtotal|Shipping|Tariff|Notes|approval|Total", line, re.IGNORECASE):
+            if in_items and re.search(r"Subtotal|Shipping|Tariff|Notes|approval|Total", lines[i], re.IGNORECASE):
                 break
-            if in_items and line.strip():
-                if is_invoice:
-                    # Only buffer non-blank lines for SO
-                    if line.strip():
-                        buffer.append(line.strip())
-                else:
-                    # Only buffer non-blank lines for PO
-                    if line.strip():
-                        buffer.append(line.strip())
+            if in_items and lines[i].strip():
+                buffer.append(lines[i].strip())
+            i += 1
+        # Debug: print buffer contents
+        print("[DEBUG] Buffer after header detection:", buffer)
         # Improved SO buffered lines (join only valid pairs)
         if is_invoice and buffer:
             i = 0
@@ -142,11 +151,23 @@ class PDFExtractor:
                 second = buffer[i+1]
                 # First line: starts with number, Drop Ship, SKU; second line ends with 'ea'
                 if re.match(r"^\d+\s+Drop Ship\s+[\w\-]+", first) and re.search(r"\d+ea", second):
+                    # Example first: '1 Drop Ship 350027-M Custom - Storm Training Group Lightweight Shorts Black 350027-M$30.98'
+                    # Example second: '6ea $ 185.88'
                     match1 = re.match(r"^\d+\s+Drop Ship\s+([\w\-]+)\s+(.*)", first)
                     match2 = re.match(r"(.*?)(\d+)ea", second)
                     if match1 and match2:
                         sku = match1.group(1).strip()
-                        desc = (match1.group(2) + ' ' + match2.group(1)).replace('\n', ' ').strip()
+                        # Remove trailing 'SKU$price' from desc_part
+                        desc_part = match1.group(2)
+                        # Remove the exact pattern 'sku+$price' from the end
+                        desc_part = re.sub(rf"{re.escape(sku)}\$\d+(\.\d{{2}})?$", "", desc_part)
+                        # Remove any $price left
+                        desc_part = re.sub(r"\$\d+(\.\d{2})?", "", desc_part)
+                        # Remove trailing qty/ea if present
+                        desc_part = re.sub(r"\s*\d+ea.*", "", desc_part)
+                        desc = (desc_part + ' ' + match2.group(1)).replace('\n', ' ').strip()
+                        # Remove any dollar sign and everything after it
+                        desc = re.sub(r'\$.*', '', desc).strip()
                         desc = re.sub(r'\s+', ' ', desc)
                         qty = int(match2.group(2))
                         items.append(LineItem(sku=sku, description=desc, qty=qty))
@@ -176,6 +197,7 @@ class PDFExtractor:
                         i += 1
                 else:
                     i += 1
+        print("[DEBUG] Extracted items:", items)
         return items
 
 class DocumentMatcher:
@@ -210,14 +232,14 @@ class DocumentMatcher:
         self.po_items = PDFExtractor.parse_line_items(text, is_invoice=False)
     
     def compare(self) -> Tuple[bool, List[str], dict, list]:
-        """Compare SO and PO, return (match: bool, issues: List[str], field_status: dict)"""
+        """Compare SO and PO, return (match: bool, issues: List[str], field_status: dict, lineitem_status: list)"""
         if not self.so_address or not self.po_address:
             return False, ["Missing address data"], {}
-        
+
         issues = []
         field_status = {}
         lineitem_status = []  # List of dicts for each line item comparison
-        
+
         def fuzzy_status(a, b):
             if a == b:
                 return 'green'
@@ -226,7 +248,7 @@ class DocumentMatcher:
                 if ratio > 0.85:
                     return 'yellow'
             return 'red'
-        
+
         # Compare addresses
         fields = [
             ('name', 'Ship To Name', self.so_address.name, self.po_address.name),
@@ -242,17 +264,17 @@ class DocumentMatcher:
                 issues.append(f"{label}: SO='{so_val}' vs PO='{po_val}'")
             elif status == 'yellow':
                 issues.append(f"{label} (close): SO='{so_val}' vs PO='{po_val}'")
-        
-        # Compare items (now with status for grid)
-        if len(self.so_items) != len(self.po_items):
-            issues.append(f"Line item count: SO={len(self.so_items)} vs PO={len(self.po_items)}")
-        max_items = max(len(self.so_items), len(self.po_items))
-        for i in range(max_items):
-            so_item = self.so_items[i] if i < len(self.so_items) else LineItem()
-            po_item = self.po_items[i] if i < len(self.po_items) else LineItem()
+
+        # Build dicts for fast SKU lookup
+        so_dict = {item.sku: item for item in self.so_items if item.sku}
+        po_dict = {item.sku: item for item in self.po_items if item.sku}
+        all_skus = sorted(set(so_dict.keys()) | set(po_dict.keys()))
+        for sku in all_skus:
+            so_item = so_dict.get(sku, LineItem(sku=sku))
+            po_item = po_dict.get(sku, LineItem(sku=sku))
             sku_status = fuzzy_status(so_item.sku, po_item.sku)
             desc_status = fuzzy_status(so_item.description, po_item.description)
-            qty_status = 'green' if so_item.qty == po_item.qty else 'red'
+            qty_status = 'green' if so_item.qty == po_item.qty and so_item.qty != 0 else 'red'
             lineitem_status.append({
                 'so': so_item,
                 'po': po_item,
@@ -261,11 +283,11 @@ class DocumentMatcher:
                 'qty_status': qty_status
             })
             if sku_status == 'red':
-                issues.append(f"Line {i+1} SKU: SO='{so_item.sku}' vs PO='{po_item.sku}'")
+                issues.append(f"SKU: SO='{so_item.sku}' vs PO='{po_item.sku}'")
             if desc_status == 'red':
-                issues.append(f"Line {i+1} Desc: SO='{so_item.description}' vs PO='{po_item.description}'")
+                issues.append(f"Desc: SO='{so_item.description}' vs PO='{po_item.description}'")
             if qty_status == 'red':
-                issues.append(f"Line {i+1} Qty: SO={so_item.qty} vs PO={po_item.qty}")
+                issues.append(f"Qty: SO={so_item.qty} vs PO={po_item.qty}")
         return len(issues) == 0, issues, field_status, lineitem_status
 
 class DocumentMatcherGUI:
@@ -379,6 +401,9 @@ class DocumentMatcherGUI:
         if path:
             try:
                 self.matcher.load_so(path)
+                print("[DEBUG] SO items loaded:", len(self.matcher.so_items))
+                for item in self.matcher.so_items:
+                    print("[DEBUG] SO item:", item)
                 self.so_label.config(text=f"✓ {Path(path).name}", fg="green")
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to load SO: {e}")
@@ -395,6 +420,9 @@ class DocumentMatcherGUI:
         if path:
             try:
                 self.matcher.load_po(path)
+                print("[DEBUG] PO items loaded:", len(self.matcher.po_items))
+                for item in self.matcher.po_items:
+                    print("[DEBUG] PO item:", item)
                 self.po_label.config(text=f"✓ {Path(path).name}", fg="green")
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to load PO: {e}")
@@ -408,13 +436,23 @@ class DocumentMatcherGUI:
         
         try:
             match, issues, field_status, lineitem_status = self.matcher.compare()
+            print("[DEBUG] lineitem_status count:", len(lineitem_status))
+            for item in lineitem_status:
+                print("[DEBUG] lineitem_status entry:", item)
             # Update line item grid
             for widget in self.lineitem_frame.winfo_children():
                 widget.destroy()
-            # Header
-            headers = ["#", "SO SKU", "PO SKU", "SO Desc", "PO Desc", "SO Qty", "PO Qty"]
+            # Header (no line number column)
+            headers = ["SO SKU", "PO SKU", "SO Desc", "PO Desc", "SO Qty", "PO Qty"]
             for idx, h in enumerate(headers):
-                lbl = Label(self.lineitem_frame, text=h, width=16, relief='groove', bg='lightgray', font=("Arial", 9, "bold"))
+                # Make description columns wider
+                if h in ("SO Desc", "PO Desc"):
+                    col_width = 40
+                elif h in ("SO Qty", "PO Qty"):
+                    col_width = 8
+                else:
+                    col_width = 16
+                lbl = Label(self.lineitem_frame, text=h, width=col_width, relief='groove', bg='lightgray', font=("Arial", 9, "bold"))
                 lbl.grid(row=0, column=idx, padx=1, pady=1)
             # Rows
             for i, item in enumerate(lineitem_status):
@@ -423,13 +461,12 @@ class DocumentMatcherGUI:
                 sku_color = {'green': '#90EE90', 'yellow': '#FFFF99', 'red': '#FF7F7F'}[item['sku_status']]
                 desc_color = {'green': '#90EE90', 'yellow': '#FFFF99', 'red': '#FF7F7F'}[item['desc_status']]
                 qty_color = {'green': '#90EE90', 'red': '#FF7F7F'}[item['qty_status']]
-                Label(self.lineitem_frame, text=str(i+1), width=4, relief='ridge', bg='white').grid(row=i+1, column=0, padx=1, pady=1)
-                Label(self.lineitem_frame, text=so.sku, width=16, relief='ridge', bg=sku_color).grid(row=i+1, column=1, padx=1, pady=1)
-                Label(self.lineitem_frame, text=po.sku, width=16, relief='ridge', bg=sku_color).grid(row=i+1, column=2, padx=1, pady=1)
-                Label(self.lineitem_frame, text=so.description, width=16, relief='ridge', bg=desc_color).grid(row=i+1, column=3, padx=1, pady=1)
-                Label(self.lineitem_frame, text=po.description, width=16, relief='ridge', bg=desc_color).grid(row=i+1, column=4, padx=1, pady=1)
-                Label(self.lineitem_frame, text=str(so.qty), width=8, relief='ridge', bg=qty_color).grid(row=i+1, column=5, padx=1, pady=1)
-                Label(self.lineitem_frame, text=str(po.qty), width=8, relief='ridge', bg=qty_color).grid(row=i+1, column=6, padx=1, pady=1)
+                Label(self.lineitem_frame, text=so.sku, width=16, relief='ridge', bg=sku_color).grid(row=i+1, column=0, padx=1, pady=1)
+                Label(self.lineitem_frame, text=po.sku, width=16, relief='ridge', bg=sku_color).grid(row=i+1, column=1, padx=1, pady=1)
+                Label(self.lineitem_frame, text=so.description, width=60, wraplength=600, relief='ridge', bg=desc_color, anchor='w', justify='left').grid(row=i+1, column=2, padx=1, pady=1)
+                Label(self.lineitem_frame, text=po.description, width=60, wraplength=600, relief='ridge', bg=desc_color, anchor='w', justify='left').grid(row=i+1, column=3, padx=1, pady=1)
+                Label(self.lineitem_frame, text=str(so.qty), width=8, relief='ridge', bg=qty_color).grid(row=i+1, column=4, padx=1, pady=1)
+                Label(self.lineitem_frame, text=str(po.qty), width=8, relief='ridge', bg=qty_color).grid(row=i+1, column=5, padx=1, pady=1)
             # Update summary grid
             so_addr = self.matcher.so_address
             po_addr = self.matcher.po_address

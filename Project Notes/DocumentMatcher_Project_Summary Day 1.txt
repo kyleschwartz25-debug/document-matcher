@@ -1,0 +1,53 @@
+Document Matcher Project: Progress Summary
+
+1. Project Goal
+- Build a Python GUI tool to compare Sales Order (SO) and Purchase Order (PO) PDFs.
+- Automatically extract and compare addresses and line items.
+- Provide clear, color-coded visual feedback for matches and mismatches.
+
+2. Initial Development
+- Started with a PowerShell prototype for basic PDF comparison.
+- Migrated to Python for better PDF parsing and GUI capabilities.
+- Chose Tkinter for the GUI and PyPDF2 for PDF text extraction.
+
+3. Core Features Implemented
+- PDF Extraction:
+  - Developed a PDFExtractor class to extract raw text from PDFs.
+- Address Extraction:
+  - Implemented logic to parse and compare “Ship To” addresses from both SO and PO.
+  - Added fuzzy matching for address fields to handle minor differences.
+- Line Item Extraction:
+  - Created logic to extract line items (SKU/Number, Description, Quantity) from both SO and PO.
+  - Iteratively improved regex and parsing to handle real-world document quirks.
+
+4. GUI Enhancements
+- Built a Tkinter-based GUI (DocumentMatcherGUI) for user-friendly operation.
+- Added file selection buttons for SO and PO PDFs.
+- Displayed selected file names and status.
+- Added a summary grid for address field comparison with color-coded cells (green/yellow/red).
+- Added a grid for line item comparison, intended to show color-coded feedback for each item and field.
+
+5. Comparison Logic
+- Developed a DocumentMatcher class to orchestrate loading, parsing, and comparing SO and PO data.
+- Implemented detailed comparison logic for both addresses and line items.
+- Provided a summary of issues and a “COMPLETE MATCH” or “MISMATCH” status in the GUI.
+
+6. Debugging and Real-World Testing
+- Used debug print statements to inspect raw PDF text extraction.
+- Identified that line items in both SO and PO PDFs are split across two lines in the extracted text.
+- Updated extraction logic to join and parse these two-line items.
+- Added more robust handling for PO line items; began similar work for SO line items.
+
+7. Current Status
+- The GUI loads, file selection works, and address comparison is robust and color-coded.
+- The line item comparison grid is present but not yet populated—likely due to header detection or line joining issues in the extraction logic.
+- Debugging is focused on making the SO/PO line item extraction logic reliably detect and parse all items.
+
+8. Next Steps
+- Add debug prints to confirm header detection and line buffering for SO/PO line items.
+- Fine-tune regex and logic to ensure all line items are parsed and displayed in the grid.
+- Validate with real-world PDFs and adjust as needed for edge cases.
+- (Optional) Refactor and clean up code, add more user feedback, and improve error handling.
+
+Version Control:
+- Regular commits have been made to Git with clear messages, including WIP (Work In Progress) commits for ongoing debugging.
