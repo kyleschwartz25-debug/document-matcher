@@ -121,20 +121,20 @@ class PDFExtractor:
         i = 0
         while i < len(lines):
             # Flexible header detection for SO and PO
+            # Detect SO header (multi-line)
             if i+2 < len(lines):
                 if (lines[i].strip().lower() == 'item'):
                     second = lines[i+1].replace(' ', '').lower()
                     third = lines[i+2].replace(' ', '').lower()
-                    # SO: '#typenumberdescriptionunitpriceqty' and 'orderedtotalprice'
                     if ('number' in second and 'qty' in second and 'ordered' in third):
                         in_items = True
                         i += 3
                         continue
-                    # PO: '#numberdescriptionqty' and 'ordereduom'
-                    if ('number' in second and 'qty' in second and 'uom' in third):
-                        in_items = True
-                        i += 3
-                        continue
+            # Detect PO header (single line)
+            if not in_items and re.match(r"item\s*#?\s+number\s+description", lines[i].lower()):
+                in_items = True
+                i += 1
+                continue
             # Detect end of items section
             if in_items and re.search(r"Subtotal|Shipping|Tariff|Notes|approval|Total", lines[i], re.IGNORECASE):
                 break
@@ -176,26 +176,46 @@ class PDFExtractor:
                         i += 1
                 else:
                     i += 1
-        # Improved PO buffered lines (join only valid pairs)
+        # Improved PO buffered lines (handle two-line PO items)
         if not is_invoice and buffer:
+            print("[DEBUG] PO buffer:", buffer)
             i = 0
             while i < len(buffer) - 1:
                 first = buffer[i]
                 second = buffer[i+1]
-                # First line: starts with number and SKU, second line ends with 'ea'
-                if re.match(r"^\d+\s+[\w\-]+", first) and re.search(r"\d+\s+ea$", second):
-                    match1 = re.match(r"^\d+\s+([\w\-]+)\s+(.*)", first)
-                    match2 = re.match(r"(.*?)(\d+)\s+ea$", second)
-                    if match1 and match2:
-                        sku = match1.group(1).strip()
-                        desc = (match1.group(2) + ' ' + match2.group(1)).replace('\n', ' ').strip()
-                        desc = re.sub(r'\s+', ' ', desc)
-                        qty = int(match2.group(2))
-                        items.append(LineItem(sku=sku, description=desc, qty=qty))
-                        i += 2
-                    else:
-                        i += 1
+                print(f"[DEBUG] PO lines: {first} | {second}")
+                # Extract SKU from first line
+                match1 = re.match(r"^\d+\s+([\w\-.]+)\s+(.*)", first)
+                # Extract quantity from second line (look for number before 'ea')
+                qty_match = re.search(r"(\d+)\s*ea", second)
+                if match1 and qty_match:
+                    sku = match1.group(1).strip()
+                    # Join both lines for description
+                    desc_raw = (match1.group(2) + ' ' + second).replace('\n', ' ').strip()
+                    # Remove price (e.g., $15.00, $ 15.00, etc.)
+                    desc = re.sub(r'\$[\d,.]+', '', desc_raw)
+                    # Remove trailing quantity info (e.g., '1 ea', '6 ea', etc.)
+                    desc = re.sub(r'\b\d+\s*ea\b', '', desc, flags=re.IGNORECASE)
+                    # Remove trailing 'Total Cost' or similar
+                    desc = re.sub(r'Total Cost.*', '', desc, flags=re.IGNORECASE)
+                    # Remove any double spaces
+                    desc = re.sub(r'\s+', ' ', desc).strip()
+                    # Remove trailing numbers or $ if any remain
+                    desc = re.sub(r'(\s*\$?\d+[.,\d]*\s*)+$', '', desc).strip()
+                    # Remove any trailing $ and whitespace
+                    desc = re.sub(r'\s*\$\s*$', '', desc).strip()
+                    # Remove trailing 'SKU+qty+unit' (e.g., '350027-M6 ea') if present
+                    desc = re.sub(rf'{re.escape(sku)}\d+\s*ea', '', desc, flags=re.IGNORECASE).strip()
+                    # Ensure description ends with SKU (size)
+                    if not desc.rstrip().endswith(sku):
+                        desc = desc.rstrip() + ' ' + sku
+                        desc = re.sub(r'\s+', ' ', desc).strip()
+                    qty = int(qty_match.group(1))
+                    print(f"[DEBUG] PO parsed: sku={sku}, desc={desc}, qty={qty}")
+                    items.append(LineItem(sku=sku, description=desc, qty=qty))
+                    i += 2
                 else:
+                    print("[DEBUG] PO regex did not match for pair.")
                     i += 1
         print("[DEBUG] Extracted items:", items)
         return items
@@ -268,10 +288,10 @@ class DocumentMatcher:
         # Build dicts for fast SKU lookup
         so_dict = {item.sku: item for item in self.so_items if item.sku}
         po_dict = {item.sku: item for item in self.po_items if item.sku}
-        all_skus = sorted(set(so_dict.keys()) | set(po_dict.keys()))
-        for sku in all_skus:
-            so_item = so_dict.get(sku, LineItem(sku=sku))
-            po_item = po_dict.get(sku, LineItem(sku=sku))
+        matched_skus = set()
+        # 1. Add all SO items in order
+        for so_item in self.so_items:
+            po_item = po_dict.get(so_item.sku, LineItem(sku=so_item.sku))
             sku_status = fuzzy_status(so_item.sku, po_item.sku)
             desc_status = fuzzy_status(so_item.description, po_item.description)
             qty_status = 'green' if so_item.qty == po_item.qty and so_item.qty != 0 else 'red'
@@ -282,6 +302,21 @@ class DocumentMatcher:
                 'desc_status': desc_status,
                 'qty_status': qty_status
             })
+            matched_skus.add(so_item.sku)
+        # 2. Add any PO items not in SO (optional, can comment out if not needed)
+        for po_item in self.po_items:
+            if po_item.sku not in matched_skus:
+                so_item = LineItem(sku=po_item.sku)
+                sku_status = fuzzy_status(so_item.sku, po_item.sku)
+                desc_status = fuzzy_status(so_item.description, po_item.description)
+                qty_status = 'green' if so_item.qty == po_item.qty and so_item.qty != 0 else 'red'
+                lineitem_status.append({
+                    'so': so_item,
+                    'po': po_item,
+                    'sku_status': sku_status,
+                    'desc_status': desc_status,
+                    'qty_status': qty_status
+                })
             if sku_status == 'red':
                 issues.append(f"SKU: SO='{so_item.sku}' vs PO='{po_item.sku}'")
             if desc_status == 'red':
@@ -330,10 +365,21 @@ class DocumentMatcherGUI:
                           command=self.select_po, bg='lightgreen', padx=20)
         po_btn.pack(side=tk.RIGHT)
         
+        # --- Scrollable main content ---
+        content_canvas = tk.Canvas(root, bg='white', highlightthickness=0)
+        content_canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        scrollbar = tk.Scrollbar(root, orient="vertical", command=content_canvas.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        content_canvas.configure(yscrollcommand=scrollbar.set)
+        self.content_frame = tk.Frame(content_canvas, bg='white')
+        self.content_frame.bind(
+            "<Configure>", lambda e: content_canvas.configure(scrollregion=content_canvas.bbox("all")))
+        content_canvas.create_window((0, 0), window=self.content_frame, anchor="nw")
+
         # Summary Grid
-        summary_label = tk.Label(root, text="Field Match Summary:", font=("Arial", 10, "bold"), bg='white')
+        summary_label = tk.Label(self.content_frame, text="Field Match Summary:", font=("Arial", 10, "bold"), bg='white')
         summary_label.pack(anchor=tk.W, padx=10, pady=(10, 0))
-        self.summary_frame = Frame(root, bg='white')
+        self.summary_frame = Frame(self.content_frame, bg='white')
         self.summary_frame.pack(fill=tk.X, padx=10, pady=(0, 10))
 
         # Address fields to show
@@ -353,41 +399,46 @@ class DocumentMatcherGUI:
             self.summary_labels[key] = val
 
         # Line Item Grid
-        lineitem_label = tk.Label(root, text="Line Item Comparison:", font=("Arial", 10, "bold"), bg='white')
+        lineitem_label = tk.Label(self.content_frame, text="Line Item Comparison:", font=("Arial", 10, "bold"), bg='white')
         lineitem_label.pack(anchor=tk.W, padx=10, pady=(0, 0))
-        self.lineitem_frame = Frame(root, bg='white')
+        self.lineitem_frame = Frame(self.content_frame, bg='white')
         self.lineitem_frame.pack(fill=tk.X, padx=10, pady=(0, 10))
 
         # Results
-        results_label = tk.Label(root, text="Comparison Results:", 
-                    font=("Arial", 10, "bold"), bg='white')
+        results_label = tk.Label(self.content_frame, text="Comparison Results:", 
+                font=("Arial", 10, "bold"), bg='white')
         results_label.pack(anchor=tk.W, padx=10, pady=(0, 0))
-        self.results_text = scrolledtext.ScrolledText(root, height=20, width=120, 
-                                 font=("Courier", 9))
+        self.results_text = scrolledtext.ScrolledText(self.content_frame, height=20, width=120, 
+                     font=("Courier", 9))
         self.results_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
         
-        # Buttons
+        # Buttons (move to top, just below title)
         button_frame = tk.Frame(root, bg='white')
-        button_frame.pack(fill=tk.X, padx=10, pady=10)
-        
+        button_frame.pack(fill=tk.X, padx=10, pady=(10, 0))
+
         self.compare_btn = tk.Button(button_frame, text="COMPARE", 
-                                    command=self.compare, bg='#90EE90', 
-                                    font=("Arial", 10, "bold"), padx=20, pady=10)
+                        command=self.compare, bg='#90EE90', 
+                        font=("Arial", 10, "bold"), padx=20, pady=10)
         self.compare_btn.pack(side=tk.LEFT, padx=5)
-        
+
         copy_btn = tk.Button(button_frame, text="COPY TO CLIPBOARD", 
-                            command=self.copy_to_clipboard, bg='#87CEEB', 
-                            font=("Arial", 10, "bold"), padx=20, pady=10)
+                    command=self.copy_to_clipboard, bg='#87CEEB', 
+                    font=("Arial", 10, "bold"), padx=20, pady=10)
         copy_btn.pack(side=tk.LEFT, padx=5)
-        
+
         clear_btn = tk.Button(button_frame, text="CLEAR", 
-                             command=self.clear, font=("Arial", 10, "bold"), 
-                             padx=20, pady=10)
+                     command=self.clear, font=("Arial", 10, "bold"), 
+                     padx=20, pady=10)
         clear_btn.pack(side=tk.LEFT, padx=5)
-        
+
+        clearall_btn = tk.Button(button_frame, text="CLEAR ALL", 
+                    command=self.clear_all, font=("Arial", 10, "bold"), 
+                    padx=20, pady=10, bg='#FFD700')
+        clearall_btn.pack(side=tk.LEFT, padx=5)
+
         exit_btn = tk.Button(button_frame, text="EXIT", 
-                            command=root.quit, font=("Arial", 10, "bold"), 
-                            padx=20, pady=10)
+                    command=root.quit, font=("Arial", 10, "bold"), 
+                    padx=20, pady=10)
         exit_btn.pack(side=tk.RIGHT, padx=5)
     
     def select_so(self):
@@ -509,13 +560,31 @@ class DocumentMatcherGUI:
             messagebox.showwarning("No Results", "Run a comparison first")
     
     def clear(self):
-        """Clear all data"""
+        """Clear results and selections, but keep loaded files"""
+        self.results_text.config(state=tk.NORMAL)
+        self.results_text.delete(1.0, tk.END)
+        self.results_text.config(state=tk.DISABLED)
+        # Clear line item grid
+        for widget in self.lineitem_frame.winfo_children():
+            widget.destroy()
+        # Optionally clear summary fields
+        for key, label in self.summary_fields:
+            self.summary_labels[key].config(text="", bg="white")
+
+    def clear_all(self):
+        """Fully reset the interface for new files"""
         self.matcher = DocumentMatcher()
         self.so_label.config(text="No file selected", fg="gray")
         self.po_label.config(text="No file selected", fg="gray")
         self.results_text.config(state=tk.NORMAL)
         self.results_text.delete(1.0, tk.END)
         self.results_text.config(state=tk.DISABLED)
+        # Clear line item grid
+        for widget in self.lineitem_frame.winfo_children():
+            widget.destroy()
+        # Clear summary fields
+        for key, label in self.summary_fields:
+            self.summary_labels[key].config(text="", bg="white")
 
 if __name__ == "__main__":
     root = tk.Tk()
