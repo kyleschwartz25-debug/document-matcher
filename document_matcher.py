@@ -254,7 +254,7 @@ class DocumentMatcher:
     def compare(self) -> Tuple[bool, List[str], dict, list]:
         """Compare SO and PO, return (match: bool, issues: List[str], field_status: dict, lineitem_status: list)"""
         if not self.so_address or not self.po_address:
-            return False, ["Missing address data"], {}
+            return False, ["Missing address data"], {}, []
 
         issues = []
         field_status = {}
@@ -317,12 +317,12 @@ class DocumentMatcher:
                     'desc_status': desc_status,
                     'qty_status': qty_status
                 })
-            if sku_status == 'red':
-                issues.append(f"SKU: SO='{so_item.sku}' vs PO='{po_item.sku}'")
-            if desc_status == 'red':
-                issues.append(f"Desc: SO='{so_item.description}' vs PO='{po_item.description}'")
-            if qty_status == 'red':
-                issues.append(f"Qty: SO={so_item.qty} vs PO={po_item.qty}")
+                if sku_status == 'red':
+                    issues.append(f"SKU: SO='{so_item.sku}' vs PO='{po_item.sku}'")
+                if desc_status == 'red':
+                    issues.append(f"Desc: SO='{so_item.description}' vs PO='{po_item.description}'")
+                if qty_status == 'red':
+                    issues.append(f"Qty: SO={so_item.qty} vs PO={po_item.qty}")
         return len(issues) == 0, issues, field_status, lineitem_status
 
 class DocumentMatcherGUI:
@@ -366,16 +366,36 @@ class DocumentMatcherGUI:
         po_btn.pack(side=tk.RIGHT)
         
         # --- Scrollable main content ---
-        content_canvas = tk.Canvas(root, bg='white', highlightthickness=0)
-        content_canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
-        scrollbar = tk.Scrollbar(root, orient="vertical", command=content_canvas.yview)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        content_canvas.configure(yscrollcommand=scrollbar.set)
-        self.content_frame = tk.Frame(content_canvas, bg='white')
+        # Use grid layout so scrollbars span the full window edges
+        content_container = tk.Frame(root, bg='white')
+        content_container.pack(fill=tk.BOTH, expand=True)
+        # Configure grid weights so content expands
+        content_container.grid_rowconfigure(0, weight=1)
+        content_container.grid_columnconfigure(0, weight=1)
+        self.content_canvas = tk.Canvas(content_container, bg='white', highlightthickness=0)
+        self.content_scrollbar = tk.Scrollbar(content_container, orient="vertical", command=self.content_canvas.yview)
+        self.content_hscrollbar = tk.Scrollbar(content_container, orient="horizontal", command=self.content_canvas.xview)
+        self.content_canvas.configure(yscrollcommand=self.content_scrollbar.set, xscrollcommand=self.content_hscrollbar.set)
+        # Grid layout: canvas (0,0), vscroll (0,1), hscroll (1,0), corner (1,1)
+        self.content_canvas.grid(row=0, column=0, sticky="nsew")
+        self.content_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.content_hscrollbar.grid(row=1, column=0, sticky="ew")
+        # Corner widget to fill gap between scrollbars
+        corner = tk.Frame(content_container, bg='white', width=20, height=20)
+        corner.grid(row=1, column=1)
+        self.content_frame = tk.Frame(self.content_canvas, bg='white')
         self.content_frame.bind(
-            "<Configure>", lambda e: content_canvas.configure(scrollregion=content_canvas.bbox("all")))
-        content_canvas.create_window((0, 0), window=self.content_frame, anchor="nw")
-
+            "<Configure>", lambda e: self.content_canvas.configure(scrollregion=self.content_canvas.bbox("all")))
+        self.content_canvas.create_window((0, 0), window=self.content_frame, anchor="nw")
+        # Enable mouse wheel scrolling globally so it works anywhere in the window
+        self.root.bind_all("<MouseWheel>", self._on_mousewheel)
+        # Hold Shift to scroll horizontally (Windows)
+        self.root.bind_all("<Shift-MouseWheel>", self._on_shift_mousewheel)
+        # Track description labels for responsive wraplength updates
+        self._desc_labels_so = []
+        self._desc_labels_po = []
+        # Bind window resize to responsive handler
+        self.root.bind("<Configure>", self._on_resize)
         # Summary Grid
         summary_label = tk.Label(self.content_frame, text="Field Match Summary:", font=("Arial", 10, "bold"), bg='white')
         summary_label.pack(anchor=tk.W, padx=10, pady=(10, 0))
@@ -406,11 +426,25 @@ class DocumentMatcherGUI:
 
         # Results
         results_label = tk.Label(self.content_frame, text="Comparison Results:", 
-                font=("Arial", 10, "bold"), bg='white')
+            font=("Arial", 10, "bold"), bg='white')
         results_label.pack(anchor=tk.W, padx=10, pady=(0, 0))
-        self.results_text = scrolledtext.ScrolledText(self.content_frame, height=20, width=120, 
-                     font=("Courier", 9))
-        self.results_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        # Container with both vertical and horizontal scrollbars
+        results_container = tk.Frame(self.content_frame, bg='white')
+        results_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        v_scroll = tk.Scrollbar(results_container, orient=tk.VERTICAL)
+        h_scroll = tk.Scrollbar(results_container, orient=tk.HORIZONTAL)
+        self.results_text = tk.Text(results_container, height=20, width=120,
+                        font=("Courier", 9), wrap=tk.NONE,
+                        yscrollcommand=v_scroll.set,
+                        xscrollcommand=h_scroll.set)
+        v_scroll.config(command=self.results_text.yview)
+        h_scroll.config(command=self.results_text.xview)
+        # Grid layout to keep scrollbars fixed to edges
+        results_container.grid_rowconfigure(0, weight=1)
+        results_container.grid_columnconfigure(0, weight=1)
+        self.results_text.grid(row=0, column=0, sticky="nsew")
+        v_scroll.grid(row=0, column=1, sticky="ns")
+        h_scroll.grid(row=1, column=0, sticky="ew")
         
         # Buttons (move to top, just below title)
         button_frame = tk.Frame(root, bg='white')
@@ -440,6 +474,69 @@ class DocumentMatcherGUI:
                     command=root.quit, font=("Arial", 10, "bold"), 
                     padx=20, pady=10)
         exit_btn.pack(side=tk.RIGHT, padx=5)
+    def _bind_mousewheel(self):
+        # Bind mouse wheel to the content canvas only (Windows)
+        try:
+            self.content_canvas.bind("<MouseWheel>", self._on_mousewheel)
+        except Exception:
+            pass
+    def _unbind_mousewheel(self):
+        try:
+            self.content_canvas.unbind("<MouseWheel>")
+        except Exception:
+            pass
+    def _on_mousewheel(self, event):
+        # Normalize delta: typically +/-120 per notch on Windows
+        try:
+            delta = int(event.delta)
+        except Exception:
+            delta = 0
+        if delta == 0:
+            return
+        steps = -int(delta / 120)  # negative for upward scroll
+        try:
+            # If user is over the results text, scroll that; otherwise scroll the main content
+            if getattr(event, 'widget', None) is self.results_text:
+                self.results_text.yview_scroll(steps, "units")
+            else:
+                self.content_canvas.yview_scroll(steps, "units")
+        except Exception:
+            pass
+
+    def _on_shift_mousewheel(self, event):
+        # Horizontal scroll when holding Shift
+        try:
+            delta = int(event.delta)
+        except Exception:
+            delta = 0
+        if delta == 0:
+            return
+        steps = -int(delta / 120)
+        try:
+            if getattr(event, 'widget', None) is self.results_text:
+                self.results_text.xview_scroll(steps, "units")
+            else:
+                self.content_canvas.xview_scroll(steps, "units")
+        except Exception:
+            pass
+
+    def _on_resize(self, event=None):
+        """Adjust wraplength of description columns based on current width."""
+        try:
+            current_width = self.content_frame.winfo_width()
+        except Exception:
+            current_width = 800
+        desc_wrap = max(300, int(current_width * 0.6))
+        for lbl in getattr(self, '_desc_labels_so', []):
+            try:
+                lbl.configure(wraplength=desc_wrap)
+            except Exception:
+                pass
+        for lbl in getattr(self, '_desc_labels_po', []):
+            try:
+                lbl.configure(wraplength=desc_wrap)
+            except Exception:
+                pass
     
     def select_so(self):
         """Select SO PDF file"""
@@ -494,6 +591,9 @@ class DocumentMatcherGUI:
             for widget in self.lineitem_frame.winfo_children():
                 widget.destroy()
             # Header (no line number column)
+            # Reset stored label refs for responsive updates
+            self._desc_labels_so = []
+            self._desc_labels_po = []
             headers = ["SO SKU", "PO SKU", "SO Desc", "PO Desc", "SO Qty", "PO Qty"]
             for idx, h in enumerate(headers):
                 # Make description columns wider
@@ -505,6 +605,12 @@ class DocumentMatcherGUI:
                     col_width = 16
                 lbl = Label(self.lineitem_frame, text=h, width=col_width, relief='groove', bg='lightgray', font=("Arial", 9, "bold"))
                 lbl.grid(row=0, column=idx, padx=1, pady=1)
+            # Compute initial wraplength for description columns
+            try:
+                current_width = self.content_frame.winfo_width()
+            except Exception:
+                current_width = 800
+            desc_wrap = max(300, int(current_width * 0.6))
             # Rows
             for i, item in enumerate(lineitem_status):
                 so = item['so']
@@ -514,8 +620,12 @@ class DocumentMatcherGUI:
                 qty_color = {'green': '#90EE90', 'red': '#FF7F7F'}[item['qty_status']]
                 Label(self.lineitem_frame, text=so.sku, width=16, relief='ridge', bg=sku_color).grid(row=i+1, column=0, padx=1, pady=1)
                 Label(self.lineitem_frame, text=po.sku, width=16, relief='ridge', bg=sku_color).grid(row=i+1, column=1, padx=1, pady=1)
-                Label(self.lineitem_frame, text=so.description, width=60, wraplength=600, relief='ridge', bg=desc_color, anchor='w', justify='left').grid(row=i+1, column=2, padx=1, pady=1)
-                Label(self.lineitem_frame, text=po.description, width=60, wraplength=600, relief='ridge', bg=desc_color, anchor='w', justify='left').grid(row=i+1, column=3, padx=1, pady=1)
+                so_desc_lbl = Label(self.lineitem_frame, text=so.description, width=60, wraplength=desc_wrap, relief='ridge', bg=desc_color, anchor='w', justify='left')
+                po_desc_lbl = Label(self.lineitem_frame, text=po.description, width=60, wraplength=desc_wrap, relief='ridge', bg=desc_color, anchor='w', justify='left')
+                so_desc_lbl.grid(row=i+1, column=2, padx=1, pady=1)
+                po_desc_lbl.grid(row=i+1, column=3, padx=1, pady=1)
+                self._desc_labels_so.append(so_desc_lbl)
+                self._desc_labels_po.append(po_desc_lbl)
                 Label(self.lineitem_frame, text=str(so.qty), width=8, relief='ridge', bg=qty_color).grid(row=i+1, column=4, padx=1, pady=1)
                 Label(self.lineitem_frame, text=str(po.qty), width=8, relief='ridge', bg=qty_color).grid(row=i+1, column=5, padx=1, pady=1)
             # Update summary grid
@@ -535,6 +645,23 @@ class DocumentMatcherGUI:
             self.results_text.insert(tk.END, f"SO: {so_file}\n")
             self.results_text.insert(tk.END, f"PO: {po_file}\n")
             self.results_text.insert(tk.END, "\n" + "="*100 + "\n\n")
+            # --- Custom summary answers ---
+            # 1. Ship address match
+            addr_match = field_status.get('address', 'red') == 'green' and \
+                         field_status.get('city', 'red') == 'green' and \
+                         field_status.get('state', 'red') == 'green' and \
+                         field_status.get('zip_code', 'red') == 'green'
+            self.results_text.insert(tk.END, f"\nQ1: Does the ship address on the PO match the SO?\nA: {'YES' if addr_match else 'NO'}\n")
+            # 2. SKU number match
+            sku_all_match = all(item['sku_status'] == 'green' for item in lineitem_status)
+            self.results_text.insert(tk.END, f"\nQ2: Is the correct SKU number listed for each item when compared to the SO?\nA: {'YES' if sku_all_match else 'NO'}\n")
+            # 3. SKU Description match
+            desc_all_match = all(item['desc_status'] == 'green' for item in lineitem_status)
+            self.results_text.insert(tk.END, f"\nQ3: Does the SKU Description of each line item match the description of the line items in the SO approved by the customer?\nA: {'YES' if desc_all_match else 'NO'}\n")
+            # 4. Order quantity match
+            qty_all_match = all(item['qty_status'] == 'green' for item in lineitem_status)
+            self.results_text.insert(tk.END, f"\nQ4: Does the order quantity of each line item match the order quantity of SO?\nA: {'YES' if qty_all_match else 'NO'}\n\n")
+            # --- End custom summary ---
             if match:
                 self.results_text.insert(tk.END, "STATUS: COMPLETE MATCH\n\n", "success")
             else:
@@ -587,6 +714,24 @@ class DocumentMatcherGUI:
             self.summary_labels[key].config(text="", bg="white")
 
 if __name__ == "__main__":
-    root = tk.Tk()
-    app = DocumentMatcherGUI(root)
-    root.mainloop()
+    try:
+        root = tk.Tk()
+        app = DocumentMatcherGUI(root)
+        root.mainloop()
+    except Exception as e:
+        # Write crash details to a log file so the user can share
+        import traceback
+        from pathlib import Path as _Path
+        log_path = _Path(__file__).with_name("crash.log")
+        try:
+            with open(log_path, "w", encoding="utf-8") as f:
+                f.write("Unexpected error starting Document Matcher\n\n")
+                f.write("Error: " + str(e) + "\n\n")
+                f.write(traceback.format_exc())
+        except Exception:
+            pass
+        # Attempt to show a simple message box; if Tk isn't available, ignore
+        try:
+            messagebox.showerror("Startup Error", f"The app crashed. See log: {log_path}")
+        except Exception:
+            pass
